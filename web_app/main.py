@@ -10,11 +10,16 @@ import time
 from PIL import Image
 from pathlib import Path
 import tempfile
+import platform
 
-# 强制 UTF-8 与 ASCII 安全的临时/结果目录，避免 Windows 中文路径导致的 ascii 错误
+# 强制 UTF-8 与跨平台可写临时/结果目录（Cloud 上使用 /mount/tmp 或 /tmp）
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-_ASCII_TMP = os.environ.get("ASCII_TMP") or (r"C:\\Windows\\Temp")
+if os.name == "nt":
+    _DEFAULT_TMP = r"C:\\Windows\\Temp"
+else:
+    _DEFAULT_TMP = "/mount/tmp" if os.path.isdir("/mount/tmp") else "/tmp"
+_ASCII_TMP = os.environ.get("ASCII_TMP") or _DEFAULT_TMP
 for _k in ("TMP", "TEMP", "TMPDIR"):
     os.environ.setdefault(_k, _ASCII_TMP)
 if not os.environ.get("RESULT_DIR"):
@@ -22,7 +27,9 @@ if not os.environ.get("RESULT_DIR"):
         os.makedirs(os.path.join(_ASCII_TMP, "emotion_music_result"), exist_ok=True)
         os.environ["RESULT_DIR"] = os.path.join(_ASCII_TMP, "emotion_music_result")
     except Exception:
-        os.environ.setdefault("RESULT_DIR", "result")
+        # Cloud 环境下项目目录只读，兜底到 /tmp/result 或当前目录 result
+        fallback_result = os.path.join(_ASCII_TMP, "emotion_music_result")
+        os.environ.setdefault("RESULT_DIR", fallback_result if os.path.isdir(_ASCII_TMP) else "result")
 
 # 添加项目根路径，便于导入多智能体与工具
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -146,9 +153,23 @@ class EmotionMusicApp:
     
     def __init__(self):
         """初始化应用"""
-        # 上传目录
-        self.upload_dir = (PROJECT_ROOT / "web_uploads")
-        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        # 选择可写的上传目录（Cloud: /mount/tmp 或 /tmp；本地: 项目/web_uploads）
+        env_up = os.environ.get("UPLOAD_DIR")
+        if env_up:
+            base = Path(env_up)
+        else:
+            if os.name == "nt":
+                base = Path(os.environ.get("TMP", _ASCII_TMP)) / "web_uploads"
+            else:
+                preferred = Path("/mount/tmp/web_uploads")
+                base = preferred if preferred.parent.exists() else Path("/tmp/web_uploads")
+        self.upload_dir = base
+        try:
+            self.upload_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # 兜底到当前工作目录下的 result/uploads（尽量可写）
+            self.upload_dir = Path(os.environ.get("RESULT_DIR", "result")) / "uploads"
+            self.upload_dir.mkdir(parents=True, exist_ok=True)
     
     def save_upload(self, uploaded_file) -> str:
         suffix = Path(uploaded_file.name).suffix
